@@ -17,6 +17,9 @@ class ApiService {
         Response<AuthResult> registerUser(const std::string& username, const std::string& password);
         Response<AuthResult> login(const std::string& username, const std::string& password);
 
+        // Forgets the token. No other request may be running.
+        void signOut();
+
         Response<std::vector<ChatSummary>> getChats() const;
 
         // Marks the chat's messages as read.
@@ -24,6 +27,9 @@ class ApiService {
 
         // Responds with the ID of the new chat, or of the existing chat with that user.
         Response<std::string> createChat(std::string username) const;
+
+        // Deletes the chat and its messages for both users.
+        Response<bool> deleteChat(const std::string& chatId) const;
 
         Response<Message> sendMessage(const std::string& chatId, const std::string& text) const;
 

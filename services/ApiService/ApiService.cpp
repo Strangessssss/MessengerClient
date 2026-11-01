@@ -14,6 +14,7 @@ namespace {
     constexpr int connectionTimeoutSeconds = 2;
     constexpr int readTimeoutSeconds = 5;
     constexpr auto jsonContentType = "application/json";
+    constexpr auto unexpectedResponse = "Unexpected response from the server";
 
     httplib::Client makeClient(const std::string& serverUrl) {
         httplib::Client client(serverUrl);
@@ -46,7 +47,7 @@ namespace {
         try {
             return {body.get<T>(), ""};
         } catch (const json::exception&) {
-            return {std::nullopt, "Unexpected response from the server"};
+            return {std::nullopt, unexpectedResponse};
         }
     }
 }
@@ -72,6 +73,10 @@ Response<AuthResult> ApiService::authenticate(const std::string& path, const std
     return response;
 }
 
+void ApiService::signOut() {
+    token.clear();
+}
+
 Response<std::vector<ChatSummary>> ApiService::getChats() const {
     httplib::Client client = makeClient(serverUrl);
     return parse<std::vector<ChatSummary>>(client.Get("/chats", authHeaders(token)));
@@ -92,7 +97,26 @@ Response<std::string> ApiService::createChat(std::string username) const {
     if (!chat.response_data.has_value()) {
         return {std::nullopt, chat.error};
     }
-    return {chat.response_data->value("id", ""), ""};
+
+    const json& created = *chat.response_data;
+    const bool hasId = created.is_object() && created.contains("id") && created["id"].is_string()
+        && !created["id"].get_ref<const std::string&>().empty();
+    if (!hasId) {
+        return {std::nullopt, unexpectedResponse};
+    }
+    return {created["id"].get<std::string>(), ""};
+}
+
+Response<bool> ApiService::deleteChat(const std::string& chatId) const {
+    httplib::Client client = makeClient(serverUrl);
+    const httplib::Result result = client.Delete("/chats/" + chatId, authHeaders(token));
+
+    // A success has no body, so there's nothing for parse to read.
+    if (result && result->status == 204) {
+        return {true, ""};
+    }
+    const Response<json> failure = parse<json>(result);
+    return {std::nullopt, failure.error.empty() ? unexpectedResponse : failure.error};
 }
 
 Response<Message> ApiService::sendMessage(const std::string& chatId, const std::string& text) const {

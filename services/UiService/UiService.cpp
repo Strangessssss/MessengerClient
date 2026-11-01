@@ -44,6 +44,26 @@ void UiService::run() {
             screen.Exit();
             return true;
         }
+        if (activeScreen != 1) {
+            return false;
+        }
+        if (event == Event::CtrlD) {
+            deleteOpenedChat();
+            return true;
+        }
+
+        // Any other key cancels a delete. Polling and mouse movement also arrive here, and don't count.
+        if (event != Event::Custom && !event.is_mouse()) {
+            confirmingDelete = false;
+        }
+        if (event == Event::CtrlW) {
+            closeChat();
+            return true;
+        }
+        if (event == Event::CtrlO) {
+            signOut();
+            return true;
+        }
         return false;
     });
 
@@ -57,7 +77,7 @@ Component UiService::buildLoginScreen() {
     const auto submitLogin = [this] { authenticate(apiService.login(usernameText, passwordText)); };
     const auto submitRegister = [this] { authenticate(apiService.registerUser(usernameText, passwordText)); };
 
-    Component usernameInput = singleLineInput(&usernameText, "username", submitLogin);
+    usernameInput = singleLineInput(&usernameText, "username", submitLogin);
     Component passwordInput = singleLineInput(&passwordText, "password", submitLogin, true);
     Component loginButton = Button("Log in", submitLogin, ButtonOption::Ascii());
     Component registerButton = Button("Register", submitRegister, ButtonOption::Ascii());
@@ -95,7 +115,7 @@ Component UiService::buildChatsScreen() {
         }
     };
 
-    Component chatMenu = Menu(&chatLabels, &selectedChat, menuOption);
+    chatMenu = Menu(&chatLabels, &selectedChat, menuOption);
     Component newChatInput = singleLineInput(&newChatText, "username", [this] { createChat(); });
     messageInput = singleLineInput(&messageText, "Type a message and press Enter", [this] { sendMessage(); });
 
@@ -105,13 +125,14 @@ Component UiService::buildChatsScreen() {
     });
 
     return Renderer(layout, [=, this] {
-        const std::string& error = actionError.empty() ? pollError : actionError;
+        const std::string confirmation = "Press Ctrl+D again to delete this chat for both users, or any other key to cancel";
+        const std::string& error = confirmingDelete ? confirmation : actionError.empty() ? pollError : actionError;
 
         return vbox({
             hbox({
                 text(username) | bold,
                 filler(),
-                text("Tab: switch field  Esc: quit") | dim,
+                text("Tab: switch field  Ctrl+W: close chat  Ctrl+D: delete chat  Ctrl+O: sign out  Esc: quit") | dim,
             }),
             separator(),
             hbox({
@@ -186,19 +207,19 @@ void UiService::openChat(const std::string& chatId) {
     }
 
     openedChat = std::move(response.response_data);
+    confirmingDelete = false;
 
     const std::scoped_lock lock(pollMutex);
     polledChatId = chatId;
 }
 
 void UiService::createChat() {
-    const std::optional otherUserUsername = newChatText;
-    if (!otherUserUsername.has_value()) {
+    if (newChatText.empty()) {
         actionError = "Enter the username of a user";
         return;
     }
 
-    const Response<std::string> response = apiService.createChat(*otherUserUsername);
+    const Response<std::string> response = apiService.createChat(newChatText);
     actionError = response.error;
     if (!response.response_data.has_value()) {
         return;
@@ -226,6 +247,68 @@ void UiService::sendMessage() {
     showChats(apiService.getChats());
 }
 
+void UiService::closeChat() {
+    if (!openedChat.has_value()) {
+        return;
+    }
+
+    clearOpenedChat();
+    actionError.clear();
+    chatMenu->TakeFocus();
+}
+
+void UiService::deleteOpenedChat() {
+    if (!openedChat.has_value()) {
+        return;
+    }
+    if (!confirmingDelete) {
+        confirmingDelete = true;
+        return;
+    }
+    confirmingDelete = false;
+
+    const Response<bool> response = apiService.deleteChat(openedChat->chatId);
+    actionError = response.error;
+    if (!response.response_data.has_value()) {
+        return;
+    }
+
+    clearOpenedChat();
+    messageText.clear();
+    selectedChat = 0;
+    showChats(apiService.getChats());
+    chatMenu->TakeFocus();
+}
+
+void UiService::signOut() {
+    // Waits for the poller to finish, as it reads the token.
+    poller = std::jthread();
+    apiService.signOut();
+
+    clearOpenedChat();
+    chats.clear();
+    chatLabels.clear();
+    selectedChat = 0;
+    username.clear();
+    userId = 0;
+    usernameText.clear();
+    newChatText.clear();
+    messageText.clear();
+    actionError.clear();
+    pollError.clear();
+
+    activeScreen = 0;
+    usernameInput->TakeFocus();
+}
+
+void UiService::clearOpenedChat() {
+    openedChat.reset();
+    confirmingDelete = false;
+
+    const std::scoped_lock lock(pollMutex);
+    polledChatId.clear();
+}
+
 void UiService::showChats(const Response<std::vector<ChatSummary>>& response) {
     pollError = response.error;
     if (!response.response_data.has_value()) {
@@ -238,10 +321,14 @@ void UiService::showChats(const Response<std::vector<ChatSummary>>& response) {
     bool openedChatExists = false;
     for (int index = 0; index < static_cast<int>(chats.size()); ++index) {
         const ChatSummary& chat = chats[index];
-        chatLabels.push_back(chat.partnerUsername + ": " + chat.latestMessageText.value_or("(no messages)"));
+        const bool isOpened = openedChat.has_value() && chat.chatId == openedChat->chatId;
+
+        // A poll fetches this list before the opened chat marks its messages as read, so that count is out of date.
+        const std::string unread = chat.unreadCount > 0 && !isOpened ? " (" + std::to_string(chat.unreadCount) + ")" : "";
+        chatLabels.push_back(chat.partnerUsername + unread + ": " + chat.latestMessageText.value_or("(no messages)"));
 
         // The list can change order, so the selection follows the opened chat.
-        if (openedChat.has_value() && chat.chatId == openedChat->chatId) {
+        if (isOpened) {
             selectedChat = index;
             openedChatExists = true;
         }
@@ -249,10 +336,7 @@ void UiService::showChats(const Response<std::vector<ChatSummary>>& response) {
 
     // The other user may have deleted the chat.
     if (openedChat.has_value() && !openedChatExists) {
-        openedChat.reset();
-
-        const std::scoped_lock lock(pollMutex);
-        polledChatId.clear();
+        clearOpenedChat();
     }
 }
 
@@ -274,7 +358,12 @@ void UiService::pollLoop(std::stop_token stopToken) {
             viewResponse = apiService.getChatView(chatId);
         }
 
-        screen.Post([this, chatsResponse = std::move(chatsResponse), viewResponse = std::move(viewResponse)] {
+        screen.Post([this, stopToken, chatsResponse = std::move(chatsResponse), viewResponse = std::move(viewResponse)] {
+            // The user may have signed out, and this data must not reach the next user's screen.
+            if (stopToken.stop_requested()) {
+                return;
+            }
+
             // This update may be older than a chat switch or a sent message made meanwhile.
             if (viewResponse.has_value() && viewResponse->response_data.has_value() && openedChat.has_value()) {
                 const ChatView& view = *viewResponse->response_data;

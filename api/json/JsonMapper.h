@@ -24,6 +24,7 @@ inline void from_json(const nlohmann::json& json, Message& message) {
 inline void from_json(const nlohmann::json& json, ChatSummary& summary) {
     json.at("chatId").get_to(summary.chatId);
     json.at("partnerUsername").get_to(summary.partnerUsername);
+    json.at("unreadCount").get_to(summary.unreadCount);
 
     const nlohmann::json& latest = json.at("latestMessage");
     if (!latest.is_null()) {

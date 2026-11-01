@@ -34,6 +34,16 @@ class UiService {
         void createChat();
         void sendMessage();
 
+        // Returns to the chats list. The chat stays on the server.
+        void closeChat();
+
+        // Asks for confirmation the first time, and deletes the opened chat the second time.
+        void deleteOpenedChat();
+
+        // Stops polling, forgets this user's data and returns to the login page.
+        void signOut();
+
+        void clearOpenedChat();
         void showChats(const Response<std::vector<ChatSummary>>& response);
         void pollLoop(std::stop_token stopToken);
 
@@ -41,6 +51,8 @@ class UiService {
         ftxui::ScreenInteractive screen;
 
         int activeScreen = 0;
+        ftxui::Component usernameInput;
+        ftxui::Component chatMenu;
         ftxui::Component messageInput;
 
         std::string usernameText;
@@ -60,6 +72,7 @@ class UiService {
         std::vector<std::string> chatLabels;
         int selectedChat = 0;
         std::optional<ChatView> openedChat;
+        bool confirmingDelete = false;
 
         std::mutex pollMutex;
         std::condition_variable_any pollWait;

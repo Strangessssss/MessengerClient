@@ -6,4 +6,5 @@ struct ChatSummary {
     std::string chatId;
     std::string partnerUsername;
     std::optional<std::string> latestMessageText;
+    int unreadCount = 0;
 };
